@@ -3,17 +3,69 @@ from streamlit.components.v1 import html
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from streamlit.errors import StreamlitAPIException, StreamlitSecretNotFoundError
+import extra_streamlit_components as stx # Thư viện quản lý cookies
+import datetime # Thư viện xử lý thời gian
 import os
 import glob
 
 def rfile(name_file):
+    """Hàm đọc nội dung từ file một cách an toàn."""
     try:
         with open(name_file, "r", encoding="utf-8") as file:
             return file.read().strip()
     except Exception:
         return ""
 
+# --- Hệ thống đăng nhập bằng pass, tích hợp ghi nhớ bằng cookie ---
+def check_password(cookie_manager):
+    """
+    Kiểm tra mật khẩu. Hàm này sẽ:
+    1. Kiểm tra cookie xác thực trước.
+    2. Nếu không có cookie, hiển thị form đăng nhập.
+    3. Thiết lập cookie sau khi đăng nhập thành công.
+    """
+    password = rfile("password.txt")
+    if not password:
+        st.error("Lỗi: File `password.txt` chưa được thiết lập hoặc đang trống.")
+        st.info("Vui lòng tạo file `password.txt` và nhập mật khẩu vào đó để tiếp tục.")
+        st.stop()
+        
+    # 1. Kiểm tra cookie trước
+    if 'is_authenticated' not in st.session_state:
+        auth_cookie = cookie_manager.get(cookie="auth_status")
+        if auth_cookie == "authenticated":
+            st.session_state.is_authenticated = True
+        else:
+            st.session_state.is_authenticated = False
+
+    # Nếu đã xác thực (qua cookie hoặc đăng nhập trước đó), cho phép truy cập
+    if st.session_state.is_authenticated:
+        return True
+
+    # Nếu chưa xác thực, hiển thị form đăng nhập
+    with st.form("login_form"):
+        st.title("🔐 Đăng nhập")
+        st.markdown("Vui lòng nhập mật khẩu để truy cập ứng dụng.")
+        input_pass = st.text_input("Mật khẩu", type="password", key="password_input")
+        submitted = st.form_submit_button("Đăng nhập")
+
+        if submitted:
+            if input_pass == password:
+                st.session_state.is_authenticated = True
+                # 3. Thiết lập cookie để ghi nhớ đăng nhập trong 7 ngày
+                cookie_manager.set(
+                    "auth_status", 
+                    "authenticated", 
+                    expires_at=datetime.datetime.now() + datetime.timedelta(days=7)
+                )
+                st.rerun()
+            else:
+                st.error("Mật khẩu không chính xác. Vui lòng thử lại.")
+    
+    st.stop()
+
 def load_config_data(config_file, default_data):
+    """Tải dữ liệu cấu hình từ file, sử dụng giá trị mặc định nếu file không tồn tại hoặc thiếu dòng."""
     try:
         with open(config_file, "r", encoding="utf-8") as file:
             lines = [line.strip() for line in file if line.strip() and not line.startswith('#')]
@@ -25,6 +77,7 @@ def load_config_data(config_file, default_data):
 
 @st.cache_data(ttl=600)
 def get_all_products_as_dicts(folder_path="product_data"):
+    """Lấy tất cả thông tin sản phẩm từ các file .txt và chuyển thành danh sách các dictionary."""
     product_index = []
     if not os.path.isdir(folder_path):
         return []
@@ -46,6 +99,7 @@ def get_all_products_as_dicts(folder_path="product_data"):
     return product_index
 
 def show_chatbot():
+    """Hiển thị giao diện chatbot và xử lý logic."""
     google_api_key = None
     try:
         google_api_key = st.secrets.get("GOOGLE_API_KEY")
@@ -86,10 +140,9 @@ def show_chatbot():
         }
     )
 
-    # Lời chào lấy từ file assistant (02.assistant.txt)
     if "chat" not in st.session_state or "messages" not in st.session_state:
         assistant_greeting = rfile("system_data/02.assistant.txt") or "Em kính chào anh/chị, Em là Flowly - Trợ lý AI Agent tại ledacchien.com. Anh/chị cần tư vấn về khóa học hoặc dịch vụ nào, em sẽ hỗ trợ ngay ạ!"
-        st.session_state.chat = model.start_chat()
+        st.session_state.chat = model.start_chat(history=[])
         st.session_state.messages = [{"role": "assistant", "content": assistant_greeting}]
 
     for message in st.session_state.messages:
@@ -111,7 +164,7 @@ def show_chatbot():
                     st.error(f"Đã xảy ra lỗi với Gemini: {e}")
 
 def show_main_page():
-    # st.subheader("✨ Các bài viết nổi bật")  # Đã bỏ 3 bài viết
+    """Hiển thị nội dung trang chính."""
     st.divider()
     if os.path.exists("system_data/logo.png"):
         logo_col1, logo_col2, logo_col3 = st.columns([1,1,1])
@@ -121,6 +174,7 @@ def show_main_page():
     show_chatbot()
 
 def show_article_page(article_number):
+    """Hiển thị trang chi tiết bài viết."""
     if st.button("⬅️ Quay về Trang chủ"): 
         st.session_state.view = "main"
         st.rerun()
@@ -132,18 +186,45 @@ def show_article_page(article_number):
         st.error(f"Lỗi: Không tìm thấy file bài viết số {article_number}.")
 
 def main():
+    """Hàm chính chạy ứng dụng."""
     st.set_page_config(page_title="Trợ lý AI", page_icon="🤖", layout="wide")
+    
+    cookie_manager = stx.CookieManager()
+    check_password(cookie_manager)
+    
     with st.sidebar:
         st.title("⚙️ Tùy chọn")
-        if st.button("🗑️ Xóa cuộc trò chuyện"):
+        if st.button("🗑️ Xóa cuộc trò chuyện", key="clear_chat_button"):
             if "chat" in st.session_state: del st.session_state.chat
             if "messages" in st.session_state: del st.session_state.messages
             st.session_state.view = "main"
             st.rerun()
+        
+        if st.button("🔒 Đăng xuất", key="logout_button"):
+            cookie_manager.delete("auth_status")
+            if 'is_authenticated' in st.session_state:
+                del st.session_state.is_authenticated
+            st.rerun()
+
         st.divider()
         st.markdown("Một sản phẩm của [Lê Đắc Chiến](https://ledacchien.com)")
 
     st.markdown("""<style>
+        /* Bắt buộc giao diện sáng */
+        body {
+            color: #31333F !important;
+            background-color: #FFFFFF !important;
+        }
+        [data-testid="stAppViewContainer"] {
+            background-color: #FFFFFF !important;
+        }
+        [data-testid="stHeader"] {
+            background-color: #FFFFFF !important;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+             background-color: #F0F2F6 !important;
+        }
+        
         [data-testid="stToolbar"], header, #MainMenu {visibility: hidden !important;}
         div[data-testid="stHorizontalBlock"]:has(div[data-testid="stChatMessageContent-user"]) { justify-content: flex-end; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent-user"]) { flex-direction: row-reverse; }
@@ -171,8 +252,10 @@ def main():
             }
         }
     </style>""", unsafe_allow_html=True)
+
     if "view" not in st.session_state: 
         st.session_state.view = "main"
+        
     view_map = {
         "main": show_main_page, 
         "article_1": lambda: show_article_page(1), 
